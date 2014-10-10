@@ -16,14 +16,15 @@ import java.net.UnknownHostException;
 
 public class FTPClient {
 	
-	private static final String NEWLINE = "\r\n";
-	private static final String CLIENT_BASE_DIR = "client-directory/";
-	private static final String SERVER_BASE_DIR = "server-directory/";
-	private static final String DIRECTORY_LISTING_FILENAME = CLIENT_BASE_DIR + "directory_listing";
+	private static final String LOCAL_FILE_NOT_FOUND = "FILE NOT FOUND";
+	private static final String CRLF = "\r\n";
+	private static final String CLIENT_BASE_DIR = "client-directory";
+	private static final String DIRECTORY_LISTING_FILENAME = CLIENT_BASE_DIR + "/directory_listing";
 	private static final String DIR = "DIR";
 	private static final String GET = "GET";
 	private static final String PUT = "PUT";
-	private static final String PASV = "PASV" + NEWLINE;
+	private static final String NULL = "NULL___";
+	private static final String PASV = "PASV" + CRLF;
 	
 	private String[] mArgs;
 	private String mServerIpString;
@@ -41,68 +42,60 @@ public class FTPClient {
 	private Socket mDataSocket;
 	private BufferedInputStream mDataInput;
 	private BufferedOutputStream mDataOutput;
+	
+	private boolean mAllSpoil = false;
+	private boolean mGetSpoil = false;
+	private boolean mPutSpoil = false;
+	private boolean mPasvOK = false;
+	
 
 	public FTPClient() {
-
+		
 	}
 
 	public void run(String[] args) {
 		mArgs = args;
 		try {
 			settleArgs();
-			println("args done");
 			setUpControlSocket();
-			println("control socket done");
-			executeCommand();
-			println("executed");
+			executeCommand(mCommand);
 			closeControlSocket();
-
 		} catch (UnknownHostException e) {
 			e.printStackTrace();
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
 	}
-
-	private void settleArgs() {
+	
+	private void settleArgs() throws IOException {
 		if (mArgs.length < 3) {
-			println("not enough args at all");
-			exit();
-		}
-		
-		mServerIpString = mArgs[0];
-		mServerControlPort = Integer.parseInt(mArgs[1]);
-		mCommand = mArgs[2].toUpperCase();
-		
-		if (mCommand.equals(GET)) {
-			if (mArgs.length < 4) {
-				println("get not enough args");
-				exit();
-			}
-			mServerPathOfFileToGet = mArgs[3];
-			
-		} else if (mCommand.equals(PUT)) {
-			if (mArgs.length < 4) {
-				println("put not enough args");
-				exit();
-			}
-			
-			mClientPathOfFileToPut = mArgs[3];
-			
-			if (mArgs.length == 4) {
-				mServerPathOfFileToPut = null;
-			}
-			
-			if (mArgs.length == 5) {
-				mServerPathOfFileToPut = mArgs[4];
-			}
-			
-		} else if (mCommand.equals(DIR)) {
-			// do nothing else
+			mAllSpoil = true;
 		} else {
-			println("invalid command");
-			println(mCommand);
-			exit();
+			mServerIpString = mArgs[0];
+			mServerControlPort = Integer.parseInt(mArgs[1]);
+			mCommand = mArgs[2].toUpperCase();
+			if (mCommand.equals(GET)) {
+				if (mArgs.length < 4) {
+					mGetSpoil = true;
+				} else {
+					mServerPathOfFileToGet = mArgs[3];
+				}
+			} else if (mCommand.equals(PUT)) {
+				if (mArgs.length < 4) {
+					mPutSpoil = true;
+				} else {
+					mClientPathOfFileToPut = mArgs[3];
+					if (mArgs.length == 4) {
+						mServerPathOfFileToPut = null;
+					} else if (mArgs.length == 5) {
+						mServerPathOfFileToPut = mArgs[4];
+					}
+				}
+			} else if (mCommand.equals(DIR)) {
+				// do nothing else
+			} else {
+				mAllSpoil = true;
+			}
 		}
 	}
 
@@ -112,86 +105,57 @@ public class FTPClient {
 		openControlSocket();
 		mControlOutput.write(PASV.getBytes());
 		mControlOutput.flush();
-		println("sent pasv");
 		String responseString = mControlInput.readLine();
-		println("receive response");
-		println(responseString);
-		if (!responseOK(responseString)) {
-			exit();
-		}
-		println("response ok");
-		String[] responseArray = responseString.split(" ");
-		//mServerIp = InetAddress.getByName(responseArray[2]);
-		mServerDataPort = Integer.parseInt(responseArray[3]);
-		println("server data port = " + responseArray[3]);
-	}
-
-	private void executeCommand() throws IOException {
-		println("executing");
-		if (mCommand.equals(DIR)) {
-			println("dir");
-			executeDIR();
-		} else if (mCommand.equals(GET)) {
-			println("get");
-			executeGET();
-		} else if (mCommand.equals(PUT)) {
-			println("put");
-			executePUT();
+		if (!isResponseOK(responseString)) {
+			mPasvOK = false;
 		} else {
-			println("invalid command");
-			exit();
+			mPasvOK = true;
+		}
+		String[] responseArray = responseString.split(" ");
+		mServerDataPort = Integer.parseInt(responseArray[3]);
+	}
+
+	private void executeCommand(String cmd) throws IOException {
+		if (mPasvOK) {
+			//send the cmd to server and get response
+			String fullCmd = getFullCmd(cmd);
+			String cmdResponse = getResponseForCmd(fullCmd);
+			
+			if (isResponseOK(cmdResponse)) {
+				processResponse(cmd, cmdResponse);
+			}
 		}
 	}
 
-	private void executeDIR() throws IOException {
-		println("running dir");
-		// send cmd, open data socket if 200.
-		String fullCmd = mCommand + NEWLINE;
-		mControlOutput.write(fullCmd.getBytes());
-		mControlOutput.flush();
-		println(fullCmd);
-		println("cmd sent");
-		String responseString = mControlInput.readLine();
-		println("response received");
-		if (!responseOK(responseString)) {
-			exit();
+	private void processResponse(String cmd, String cmdResponse) throws IOException {
+		if (cmd.equals(DIR)) {
+			processResponseDIR(cmdResponse);
+		} else if (cmd.equals(GET)) {
+			processResponseGET(cmdResponse);
+		} else if (cmd.equals(PUT)) {
+			processResponsePUT(cmdResponse);
 		}
-		println("response ok");
+	}
+
+	private void processResponseDIR(String response) throws IOException {
 		openDataSocket();
-		println("data socket opened");
-		
 		// get input data and write to file.
 		BufferedWriter bw = new BufferedWriter(new FileWriter(DIRECTORY_LISTING_FILENAME));
 		int i = mDataInput.read();
-		println("got input from data socket");
 		while (i != -1) {
 			bw.write(i);
 			i = mDataInput.read();
 		}
 		bw.close();
-		println("all data read");
+		closeDataSocket();
+		logFinalOK();
 	}
 
-	private void executeGET() throws IOException {
-		println("running get");
-		// send cmd, open data socket if 200.
-		String fullCmd = mCommand + " " + mServerPathOfFileToGet + NEWLINE;
-		mControlOutput.write(fullCmd.getBytes());
-		mControlOutput.flush();
-		println(fullCmd);
-		println("cmd sent");
-		String responseString = mControlInput.readLine();
-		println("response received");
-		if (!responseOK(responseString)) {
-			exit();
-		}
-		println("response ok");
+	private void processResponseGET(String response) throws IOException {
 		openDataSocket();
-		println("data socket opened");
-		
-		// if get from server/s-d/asd then put in client/c-d/asd
+		// put in client-dir root
 		String localFilename = new File(mServerPathOfFileToGet).getName();
-		String localFilepath = CLIENT_BASE_DIR + localFilename;
+		String localFilepath = CLIENT_BASE_DIR + "/" + localFilename;
 		BufferedWriter bw = new BufferedWriter(new FileWriter(localFilepath));
 		int i = mDataInput.read();
 		while (i != -1) {
@@ -199,89 +163,94 @@ public class FTPClient {
 			i = mDataInput.read();
 		}
 		bw.close();
+		closeDataSocket();
+		logFinalOK();
 	}
 
-	private void executePUT() throws IOException {
-		// send cmd, open data socket if 200.
-		String fullCmd = mCommand + " " + mClientPathOfFileToPut;
-		if (mServerPathOfFileToPut != null) {
-			fullCmd += " " + mServerPathOfFileToPut;
-		}
-		fullCmd += NEWLINE;
-		mControlOutput.write(fullCmd.getBytes());
-		mControlOutput.flush();
-		println(fullCmd);
-		println("cmd sent");
-		String responseString = mControlInput.readLine();
-		println("response received");
-		println(responseString);
-		if (!responseOK(responseString)) {
-			exit();
-		}
-		println("response ok");
-		openDataSocket();
-		println("data socket opened");
-		
-		try {
-			BufferedInputStream br = new BufferedInputStream(new FileInputStream(CLIENT_BASE_DIR + mClientPathOfFileToPut));
+	private void processResponsePUT(String response) throws IOException {
+		File f = new File(CLIENT_BASE_DIR + "/" + mClientPathOfFileToPut);
+		if (!f.exists() || f.isDirectory()) {
+			log(LOCAL_FILE_NOT_FOUND);
+		} else {
+			openDataSocket();
+			BufferedInputStream br = new BufferedInputStream(new FileInputStream(f));
 			int i = br.read();
 			while (i != -1) {
 				mDataOutput.write(i);
 				i = br.read();
 			}
 			br.close();
-			mDataOutput.write(NEWLINE.getBytes());
 			mDataOutput.flush();
 			closeDataSocket();
-			println("file sent");
-			println("waiting for reponse");
-			
-			String putResponseString = mControlInput.readLine();
-			println("got response");
-			println(putResponseString);
-			if (!responseOK(putResponseString)) {
-				exit();
-			}
-			
-			
-		} catch (FileNotFoundException e) {
-			log("FILE NOT FOUND");
+			logFinalOK();
 		}
+	
 	}
 
-	
-
-	
-	
-	
-	
-	
 	// ------- HELPER METHODS ------------- //
 	
-	private boolean responseOK(String responseString) throws IOException {
-		String pasvResponse = responseString;
-		if (pasvResponse == null || pasvResponse.length() == 0) {
-			println("empty response");
+	private String getFullCmd(String cmd) {
+		String fullCmd;
+		if (mAllSpoil) {
+			fullCmd = NULL;
+		} else if (cmd.equals(DIR)) {
+			fullCmd = cmd;
+		} else if (cmd.equals(GET)) {
+			if (mGetSpoil) {
+				fullCmd = cmd;
+			} else {
+				fullCmd = cmd + " " + mServerPathOfFileToGet;
+			}
+		} else if (cmd.equals(PUT)) {
+			if (mPutSpoil) {
+				fullCmd = cmd;
+			} else {
+				fullCmd = cmd + " " + mClientPathOfFileToPut;
+				if (mServerPathOfFileToPut != null) {
+					fullCmd += " " + mServerPathOfFileToPut;
+				}
+			}
+
 		} else {
-			String[] responseCodes = pasvResponse.split(" ");
+			fullCmd = cmd;
+		}
+		fullCmd += CRLF;
+		return fullCmd;
+	}
+	
+	private String getResponseForCmd(String fullCmd) throws IOException {
+		mControlOutput.write(fullCmd.getBytes());
+		mControlOutput.flush();
+		String cmdResponse = mControlInput.readLine();
+		log(cmdResponse);
+		return cmdResponse;
+	}
+
+	private boolean isResponseOK(String responseString) throws IOException {
+		boolean result = true;
+		if (responseString == null || responseString.length() == 0) {
+			result = false;
+		} else {
+			String[] responseCodes = responseString.split(" ");
 			if (!responseCodes[0].equals("200")) {
-				println("not 200 response");
-				println(pasvResponse);
+				result = false;
 			}
 		}
-		log(responseString+"\n"); // the original diff file needs the \n
-		return true;
+		return result;
+	}
+
+	private void logFinalOK() throws IOException {
+		String cmdResponse = mControlInput.readLine();
+		log(cmdResponse);
 	}
 
 	private void openControlSocket() throws IOException {
-		println("control port "+ mServerControlPort);
 		mControlSocket = new Socket(mServerIp, mServerControlPort);
 		mControlOutput = new BufferedOutputStream (new DataOutputStream(mControlSocket.getOutputStream()));
 		mControlInput = new BufferedReader(new InputStreamReader(mControlSocket.getInputStream()));
 	}
 
 	private void openDataSocket() throws IOException {
-		println("data port "+ mServerDataPort);
 		mDataSocket = new Socket(mServerIp, mServerDataPort);
 		mDataOutput = new BufferedOutputStream (new DataOutputStream(mDataSocket.getOutputStream()));
 		mDataInput = new BufferedInputStream(mDataSocket.getInputStream());
@@ -305,10 +274,6 @@ public class FTPClient {
 		this.mControlOutput.close();
 	}
 
-	private void exit() {
-		System.exit(1);
-	}
-	
 	private void println(String s) {
 		System.out.println(s);
 	}
